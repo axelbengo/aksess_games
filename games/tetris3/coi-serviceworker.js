@@ -61,7 +61,8 @@ if (typeof window === 'undefined') {
                 })
                 .catch((e) => {
                     console.error("SW Fetch Error:", e);
-                    return fetch(event.request); 
+                    return fetch(event.request);
+                }) 
         );
     });
 
