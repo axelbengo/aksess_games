@@ -125,7 +125,11 @@
                 try {
                     // Appel à ton Edge Function existante
                     const { data, error: funcError } = await supabaseClient.functions.invoke("create-checkout", {
-                        body: { price_id: priceId }
+                        body: { 
+							price_id: priceId ,
+							current_url: window.location.href
+							
+							}
                     });
 
                     if (funcError || !data.transaction_id) throw new Error("Erreur Backend");
