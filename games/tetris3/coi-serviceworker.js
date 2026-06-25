@@ -19,7 +19,7 @@ if (typeof window === 'undefined') {
         const r = event.request;
 
         // --- CORRECTIF 1 : BYPASS TOTAL POUR PADDLE ET CLOUDFLARE BEACONS ---
-        if (r.url.includes("cdn-cgi/rum") || r.url.includes("supabase.co") || url.includes("paddle.com")) {
+        if (r.url.includes("cdn-cgi/rum") || r.url.includes("supabase.co")) {
             return; 
         }
 
