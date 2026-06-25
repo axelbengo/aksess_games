@@ -3,31 +3,33 @@ import { supabaseClient } from "./config.js?v=1.0.2";
 		    
 export const GameSync = {
     // Charge depuis Supabase, sinon depuis LocalStorage
-    async load(gameSlug) {
+     async load(gameSlug) {
         try {
             const { data: { user } } = await supabaseClient.auth.getUser();
-            
-            // On récupère toujours le local par sécurité d'abord
-            let localData = JSON.parse(localStorage.getItem(`save_${gameSlug}`)) || {};
-
-            if (user) {
-                const { data, error } = await supabaseClient
-                    .from('user_game_data')
-                    .select('data')
-                    .eq('user_id', user.id)
-                    .eq('game_slug', gameSlug)
-                    .maybeSingle();
-
-                if (data && data.data) {
-                    // Si le serveur a des données, on synchronise le local avec le serveur
-                    localData = data.data;
-                    localStorage.setItem(`save_${gameSlug}`, JSON.stringify(localData));
-                }
+            if (!user) {
+                console.log("👤 Mode Invité : Chargement local uniquement.");
+                return JSON.parse(localStorage.getItem(`save_${gameSlug}`)) || null;
             }
-            return localData;
+
+            // On cherche sur Supabase
+            const { data, error } = await supabaseClient
+                .from('user_game_data')
+                .select('data')
+                .eq('user_id', user.id)
+                .eq('game_slug', gameSlug)
+                .maybeSingle(); // Ne crash pas si vide
+
+            if (data && data.data) {
+                console.log("☁️ Données Cloud trouvées et synchronisées en local.");
+                localStorage.setItem(`save_${gameSlug}`, JSON.stringify(data.data));
+                return data.data;
+            } else {
+                console.log("ℹ️ Aucune donnée sur le Cloud. Utilisation du local ou défaut.");
+                return JSON.parse(localStorage.getItem(`save_${gameSlug}`)) || null;
+            }
         } catch (err) {
-            console.error("Erreur Load:", err);
-            return JSON.parse(localStorage.getItem(`save_${gameSlug}`)) || {};
+            console.error("❌ Erreur critique Load:", err);
+            return null;
         }
     },
 
