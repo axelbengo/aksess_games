@@ -97,7 +97,7 @@ export const GameSync = {
 			JSON.stringify(newData)
 		);
 		this.scheduleSync(gameSlug);
-	}
+	},
     
     scheduleSync(gameSlug) {
 		if (syncTimer) {
