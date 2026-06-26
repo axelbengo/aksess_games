@@ -1,4 +1,4 @@
-import { supabaseClient } from "./config.js?v=1.0.2";
+import { supabaseClient } from "./config.js";
 
 let syncTimer = null;
 
