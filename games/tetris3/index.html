@@ -264,10 +264,24 @@ const engine = new Engine(GODOT_CONFIG);
 			// --- FONCTIONS EXPOSÉES À GODOT ---
 
 			// CHARGEMENT (Appelé par SaveManager._ready)
-			window.getRemoteData = async function() {
-				const data = await GameSync.load(slug);
-				if (data === "NETWORK_ERROR") return "NETWORK_ERROR";
-				return JSON.stringify(data);
+			window.requestRemoteData = async function() {
+				try {
+					const data = await GameSync.load(slug);
+					let result = "";
+					if (data === "NETWORK_ERROR") {
+						result = "NETWORK_ERROR";
+					} else {
+						result = JSON.stringify(data);
+					}
+					
+					// On envoie le résultat à Godot via un callback global
+					if (window.on_data_received) {
+						window.on_data_received(result);
+					}
+				} catch (e) {
+					console.error(e);
+					if (window.on_data_received) window.on_data_received("NETWORK_ERROR");
+				}
 			};
 
 			// SAUVEGARDE LOCALE (Appelé par SaveManager.update_stat)
