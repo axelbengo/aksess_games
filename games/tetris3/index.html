@@ -263,7 +263,7 @@ const engine = new Engine(GODOT_CONFIG);
 
 			// --- FONCTIONS EXPOSÉES À GODOT ---
 
-			// CHARGEMENT (Appelé par SaveManager._ready)
+			// CHARGEMENT DIRECT(Appelé par SaveManager._ready)
 			window.requestRemoteData = async function() {
 				try {
 					console.log("📥 Chargement sauvegarde...");
