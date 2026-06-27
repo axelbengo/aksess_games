@@ -14,4 +14,6 @@ export const CLOUDINARY_PRESET = "aksess_preset";
 export const PADDLE_ENV = "sandbox"; 
 export const PADDLE_CLIENT_TOKEN = "test_28198c47ba43fe895e5e9f2ffa1";
 
+export const SAVE_SALT = "je longtemps ensemble 00001827655444 désassemblement partie mais en vain sur moche que tout va pour ainsi faire une 654345433 meilleut constament devenu grosse sur petite niche de toi,326";
+
 export const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);

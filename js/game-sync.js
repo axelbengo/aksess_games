@@ -1,49 +1,69 @@
-import { supabaseClient } from "./config.js";
+import { supabaseClient, SAVE_SALT } from "./config.js";
 
 let syncTimer = null;
 
+// Fonction interne pour générer une signature
+async function generateSignature(dataString) {
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(SAVE_SALT);
+    const msgData = encoder.encode(dataString);
+    
+    const cryptoKey = await crypto.subtle.importKey(
+        "raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+    );
+    
+    const signature = await crypto.subtle.sign("HMAC", cryptoKey, msgData);
+    return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 export const GameSync = {
 
-    async load(gameSlug) {
-		try {
-			// 1. Récupérer l'utilisateur
-			const { data: { user } } = await supabaseClient.auth.getUser();
-			
-			// 2. Récupérer la sauvegarde locale (navigateur)
-			const localRaw = localStorage.getItem(`save_${gameSlug}`);
-			const localData = localRaw ? JSON.parse(localRaw) : null;
+     async load(gameSlug) {
+        try {
+            const { data: { user } } = await supabaseClient.auth.getUser();
+            const localRaw = localStorage.getItem(`save_${gameSlug}`);
+            
+            let localData = null;
+            if (localRaw) {
+                const envelope = JSON.parse(localRaw);
+                // Si c'est une ancienne sauvegarde sans signature, on accepte pour cette fois ou on refuse
+                if (!envelope.signature) {
+                    localData = envelope; 
+                } else {
+                    // VERIFICATION DU SCEAU
+                    const expectedSignature = await generateSignature(JSON.stringify(envelope.payload));
+                    if (envelope.signature === expectedSignature) {
+                        localData = envelope.payload;
+                    } else {
+                        console.error("🚨 ALERTE TRICHE : La signature locale est invalide !");
+                        return "TAMPERED_ERROR"; // On prévient Godot
+                    }
+                }
+            }
 
-			// Si pas connecté, on renvoie direct le local
-			if (!user) return localData;
+            if (!user) return localData;
 
-			// 3. Récupérer la sauvegarde Cloud
-			const { data, error } = await supabaseClient
-				.from("user_game_data")
-				.select("data")
-				.eq("user_id", user.id)
-				.eq("game_slug", gameSlug)
-				.maybeSingle();
+            // Chargement Cloud
+            const { data, error } = await supabaseClient.from("user_game_data").select("data").eq('user_id', user.id).eq('game_slug', gameSlug).maybeSingle();
+            if (error) throw error;
 
-			if (error) throw error;
+            if (data && data.data) {
+                // Ici aussi on pourrait vérifier une signature cloud si on veut être paranoïaque
+                localStorage.setItem(`save_${gameSlug}`, JSON.stringify({
+                    payload: data.data,
+                    signature: await generateSignature(JSON.stringify(data.data))
+                }));
+                return data.data;
+            }
 
-			// 4. Si le Cloud existe, on met à jour le local et on renvoie le Cloud
-			if (data && data.data) {
-				localStorage.setItem(`save_${gameSlug}`, JSON.stringify(data.data));
-				return data.data;
-			}
-
-			// 5. Si rien sur le Cloud, on renvoie le local
-			return localData;
-
-		} catch (err) {
-			console.error("❌ Erreur Load brute :", err.message);
-			// En cas d'erreur (réseau/auth), on renvoie le local par sécurité
-			const backup = localStorage.getItem(`save_${gameSlug}`);
-			return backup ? JSON.parse(backup) : null;
-		}
-	},
+            return localData;
+        } catch (err) {
+            console.error("Load Error:", err);
+            return "NETWORK_ERROR";
+        }
+    },
 	
-	scheduleSync(gameSlug) {
+	async scheduleSync(gameSlug) {
 		// 1. Annuler le décompte précédent s'il existe
 		if (syncTimer) clearTimeout(syncTimer);
 
@@ -53,17 +73,22 @@ export const GameSync = {
 		}, 3000);
 	},
 
-    saveLocally(gameSlug, newData) {
-		newData.saved_at = Date.now();
-		
-		// Sauvegarde dans le navigateur
-		localStorage.setItem(
-			`save_${gameSlug}`,
-			JSON.stringify(newData)
-		);
-		// PROGRAMME l'envoi vers le Cloud automatiquement
-		this.scheduleSync(gameSlug);
-	},
+    async saveLocally(gameSlug, newData) {
+        newData.saved_at = Date.now();
+        const dataString = JSON.stringify(newData);
+        
+        // On génère le sceau
+        const signature = await generateSignature(dataString);
+        
+        // On enregistre l'enveloppe complète
+        const envelope = {
+            payload: newData,
+            signature: signature
+        };
+        
+        localStorage.setItem(`save_${gameSlug}`, JSON.stringify(envelope));
+        this.scheduleSync(gameSlug);
+    },
 	
 	async deleteData(gameSlug) {
 		try {
@@ -100,23 +125,24 @@ export const GameSync = {
 			// 2. Récupérer la donnée locale brute
 			const localRaw = localStorage.getItem(`save_${gameSlug}`);
 			if (!localRaw) return; // Rien à sauvegarder
+			
+			 // On récupère l'enveloppe signée (Niveau 1)
+			const envelope = JSON.parse(localRaw);
+			const dataToSend = envelope.payload || envelope; 
 
 			// 3. Écraser sur Supabase (Simple Upsert)
-			const { error } = await supabaseClient
-				.from("user_game_data")
-				.upsert({
-					user_id: user.id,
-					game_slug: gameSlug,
-					data: JSON.parse(localRaw),
-					updated_at: new Date().toISOString()
-				}, {
-					onConflict: "user_id,game_slug"
-				});
+			// APPEL DE LA FONCTION SÉCURISÉE AU LIEU DE L'UPSERT DIRECT
+			const { data, error } = await supabaseClient.functions.invoke('secure-sync', {
+				body: { 
+					game_slug: gameSlug, 
+					new_data: dataToSend 
+				}
+			});
 
 			if (error) throw error;
 			console.log("☁️ Sauvegarde Cloud réussie.");
 		} catch (err) {
-			console.error("❌ Erreur Sync brute :", err.message);
+			console.error("❌ Erreur SECURE-SYNC :", err.message);
 		}
 	}
 
