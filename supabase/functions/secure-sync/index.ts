@@ -3,10 +3,14 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  // 1. Gestion du Preflight (OBLIGATOIRE pour CORS)
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
 
   try {
     const supabaseAdmin = createClient(
@@ -14,14 +18,26 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // 1. Authentification du joueur
-    const authHeader = req.headers.get('Authorization')!
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(authHeader.replace('Bearer ', ''))
-    if (authError || !user) return new Response("Unauthorized", { status: 401 })
+    // 2. Vérification du Token
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: "No auth header" }), { status: 401, headers: corsHeaders })
+    }
 
-    const { game_slug, new_data } = await req.json()
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token)
     
-    // 2. Récupérer l'ancienne sauvegarde pour comparer
+    if (authError || !user) {
+      return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: corsHeaders })
+    }
+
+    // 3. Lecture du corps de la requête
+    const { game_slug, new_data } = await req.json()
+    if (!game_slug || !new_data) {
+      return new Response(JSON.stringify({ error: "Missing payload" }), { status: 400, headers: corsHeaders })
+    }
+
+    // 4. Récupération de l'ancienne sauvegarde
     const { data: oldRow } = await supabaseAdmin
       .from('user_game_data')
       .select('data')
@@ -31,23 +47,24 @@ Deno.serve(async (req) => {
 
     const oldData = oldRow?.data || { bananes: 0, saved_at: 0 }
 
-    // --- LOGIQUE ANTI-TRICHE (TIMESTAMP & COHÉRENCE) ---
+    // --- LOGIQUE DE SÉCURITÉ ---
 
-    // A. Vérification du Timestamp (Session)
-    // Empêche de renvoyer une vieille sauvegarde ou de "rejouer" une requête
-    if (new_data.saved_at <= oldData.saved_at) {
-      return new Response("Old timestamp detected", { status: 400 })
+    // A. Anti-Rejeu (Timestamp)
+    const newTs = Number(new_data.saved_at) || 0
+    const oldTs = Number(oldData.saved_at) || 0
+    if (newTs <= oldTs && oldTs !== 0) {
+      console.log(`[Abort] Old timestamp: New(${newTs}) <= Old(${oldTs})`)
+      return new Response(JSON.stringify({ status: "ignored", reason: "old_timestamp" }), { headers: corsHeaders })
     }
 
-    // B. Vérification de la cohérence (Exemple : Bananes)
-    // On interdit de gagner plus de 500 bananes entre deux synchros (toutes les 30s)
-    const diffBananes = new_data.bananes - oldData.bananes
-    if (diffBananes > 500) {
-      console.warn(`🚨 Triche suspectée pour ${user.id} : +${diffBananes} bananes`)
-      return new Response("Abnormal gain detected", { status: 403 })
+    // B. Anti-Gros Gains (Cohérence)
+    const newBananes = Number(new_data.bananes) || 0
+    const oldBananes = Number(oldData.bananes) || 0
+    if (newBananes - oldBananes > 1000) {
+      return new Response(JSON.stringify({ error: "Abnormal gain" }), { status: 403, headers: corsHeaders })
     }
 
-    // 3. Si tout est OK, on enregistre avec le Service Role
+    // 5. Enregistrement
     const { error: upsertError } = await supabaseAdmin
       .from('user_game_data')
       .upsert({
@@ -60,10 +77,15 @@ Deno.serve(async (req) => {
     if (upsertError) throw upsertError
 
     return new Response(JSON.stringify({ status: "success" }), { 
+      status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
     })
 
   } catch (err) {
-    return new Response(err.message, { status: 500, headers: corsHeaders })
+    console.error("Crash Secure Sync:", err.message)
+    return new Response(JSON.stringify({ error: err.message }), { 
+      status: 500, 
+      headers: corsHeaders 
+    })
   }
 })
