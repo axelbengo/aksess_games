@@ -60,17 +60,20 @@ Deno.serve(async (req) => {
         .from("payment_intents")
         .update({ status: "completed", completed_at: new Date().toISOString() })
         .eq('id', intentId)
-        .eq('status', 'pending')
+        .in('status', ['pending', 'initiated'])
         .select().maybeSingle();
       
-      if (!updatedIntent) return new Response("Already Processed", { status: 200 });
+      if (!updatedIntent) {
+        console.log("ℹ️ Transaction déjà traitée ou statut incompatible.");
+        return new Response("Already Processed", { status: 200 });
+      }
 
       const quantity = data.items?.[0]?.quantity || 1;
       const reward = intent.store_products;
       const totalAmount = (reward.reward_amount || 0) * quantity;
 
       // Insertion Wallet
-      await supabaseAdmin.from('wallet_transactions').insert({
+      const { error: wErr } = await supabaseAdmin.from('wallet_transactions').insert({
         user_id: userId,
         amount: Math.round(totalAmount),
         currency: data.currency_code || "USD",
@@ -80,15 +83,17 @@ Deno.serve(async (req) => {
         reference_id: data.id,
         metadata: { processed: false, reward_type: reward.reward_type }
       });
+      if (wErr) console.error("Erreur Wallet:", wErr);
 
       // Insertion Item Purchases
-      await supabaseAdmin.from('item_purchases').insert({
+      const { error: iErr } = await supabaseAdmin.from('item_purchases').insert({
         user_id: userId,
         item_id: reward.reward_type,
         paddle_order_id: data.id,
         delivered: false
       });
-
+      
+      if (iErr) console.error("Erreur Items:", iErr);
       console.log(`✅ Transaction ${data.id} complétée pour l'utilisateur ${userId}`);
     }
 
@@ -99,7 +104,7 @@ Deno.serve(async (req) => {
         .from("payment_intents")
         .update({ status: "canceled" })
         .eq('id', intentId)
-        .eq('status', 'pending');
+        .in('status', ['pending', 'initiated']);
     }
 
     // CAS 3 : PAIEMENT ÉCHOUÉ

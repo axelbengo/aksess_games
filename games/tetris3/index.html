@@ -342,6 +342,38 @@ const engine = new Engine(GODOT_CONFIG);
 					.update({ completed_at: new Date().toISOString() }) 
 					.eq('id', intentId);
 			};
+			
+			//marque un produit comme livré
+			window.markTransactionsAsProcessed = async function(idsJson) {
+				try {
+					const ids = JSON.parse(idsJson);
+					for (let id of ids) {
+						// 1. Récupérer la référence Paddle pour lier les deux tables
+						const { data: tx } = await supabaseClient
+							.from('wallet_transactions')
+							.select('reference_id')
+							.eq('id', id)
+							.single();
+
+						// 2. Marquer comme traité dans wallet_transactions
+						await supabaseClient
+							.from('wallet_transactions')
+							.update({ metadata: { processed: true } })
+							.eq('id', id);
+
+						// 3. Marquer comme livré dans item_purchases (via l'ID de commande Paddle)
+						if (tx && tx.reference_id) {
+							await supabaseClient
+								.from('item_purchases')
+								.update({ delivered: true })
+								.eq('paddle_order_id', tx.reference_id);
+						}
+					}
+					console.log("✅ Tables Wallet et Items mises à jour.");
+				} catch (e) {
+					console.error("Erreur markTransactionsAsProcessed:", e);
+				}
+			};
 
 			// GESTION DES TRANSACTIONS PADDLE
 			window.requestPendingTransactions = async function () {
