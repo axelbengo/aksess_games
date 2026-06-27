@@ -1,0 +1,34 @@
+name: Obfuscate JavaScript
+on:
+  push:
+    branches:
+      - main  # L'action se lance quand tu push sur la branche main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install JavaScript Obfuscator
+        run: npm install -g javascript-obfuscator
+
+      - name: Obfuscate files
+        run: |
+          # On obfusque les fichiers sensibles dans le dossier js/
+          # On remplace les fichiers d'origine par leur version illisible
+          javascript-obfuscator js/config.js --output js/config.js --compact true --self-defending true --string-array true --string-array-encoding 'base64' --string-array-threshold 0.75
+          javascript-obfuscator js/game-sync.js --output js/game-sync.js --compact true --self-defending true --string-array true --string-array-encoding 'base64' --string-array-threshold 0.75
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
+          publish_branch: gh-pages # Le code illisible va ici#1A1A1A#000000#4D4D4D#FFFFFF
