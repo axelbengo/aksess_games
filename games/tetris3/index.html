@@ -266,24 +266,86 @@ const engine = new Engine(GODOT_CONFIG);
 			// CHARGEMENT DIRECT(Appelé par SaveManager._ready)
 			window.requestRemoteData = async function() {
 				try {
-					console.log("📥 JS: Récupération des données...");
-					const data = await GameSync.load(slug);
+					console.log("📥 JS: Vérification de la session...");
 					
-					if (window.on_data_received) {
-						if (data === "NETWORK_ERROR") {
-							window.on_data_received("NETWORK_ERROR");
-						} else if (!data) {
-							window.on_data_received("null");
-						} else {
-							// OBLIGATOIRE : On convertit l'objet en texte JSON pour Godot
-							window.on_data_received(JSON.stringify(data)); 
+					// 1. Récupérer les deux sources
+					const { data: { user } } = await supabaseClient.auth.getUser();
+					const localRaw = localStorage.getItem(`save_${slug}`);
+					const localData = localRaw ? JSON.parse(localRaw) : null;
+
+					// 2. CAS DE CONFLIT : Joueur a une partie locale ET est connecté
+					// On vérifie si la partie locale appartient à un "invité" (pas de saved_at ou saved_at différent du cloud)
+					if (user && localData) {
+						// On récupère les infos cloud pour comparer
+						const { data: remoteRow } = await supabaseClient.from("user_game_data").select("data").eq('user_id', user.id).eq('game_slug', slug).maybeSingle();
+						const remoteData = remoteRow?.data;
+
+						if (remoteData) {
+							// Si les dates de sauvegarde sont différentes de plus de 5 secondes, on demande
+							const diff = Math.abs((localData.saved_at || 0) - (remoteData.saved_at || 0));
+							
+							if (diff > 5000) { // 5 secondes de tolérance
+								console.log("⚠️ Conflit détecté, attente du choix utilisateur...");
+								const choice = await showConflictModal();
+								
+								if (choice === 'cloud') {
+									localStorage.setItem(`save_${slug}`, JSON.stringify(remoteData));
+									if (window.on_data_received) window.on_data_received(JSON.stringify(remoteData));
+									return;
+								} else {
+									// Choix Local : On garde le local et on force une synchro cloud immédiate
+									await GameSync.sync(slug);
+									if (window.on_data_received) window.on_data_received(JSON.stringify(localData));
+									return;
+								}
+							}
 						}
 					}
+
+					// 3. CAS NORMAL (Déjà connecté ou Hors-ligne pur) : On utilise la fonction load normale
+					const data = await GameSync.load(slug);
+					if (window.on_data_received) {
+						window.on_data_received(data === "NETWORK_ERROR" ? "NETWORK_ERROR" : JSON.stringify(data));
+					}
+
 				} catch (e) {
 					console.error(e);
 					if (window.on_data_received) window.on_data_received("NETWORK_ERROR");
 				}
 			};
+			
+			// Fonction utilitaire pour afficher la bulle et attendre le clic
+			function showConflictModal() {
+				return new Promise((resolve) => {
+					const overlay = document.getElementById('sync-conflict-overlay');
+					overlay.style.display = 'flex';
+					
+					document.getElementById('btn-keep-local').onclick = () => {
+						overlay.style.display = 'none';
+						resolve('local');
+					};
+					
+					document.getElementById('btn-keep-cloud').onclick = () => {
+						overlay.style.display = 'none';
+						resolve('cloud');
+					};
+				});
+			}
+			
+			let lastKnownUserId = null;
+
+			// On surveille les changements de connexion en temps réel
+			supabaseClient.auth.onAuthStateChange((event, session) => {
+				const currentUserId = session?.user?.id || null;
+				
+				// Si l'utilisateur vient de se connecter alors que le jeu tourne déjà
+				if (event === "SIGNED_IN" && lastKnownUserId === null) {
+					console.log("🔓 Connexion détectée pendant le jeu !");
+					window.requestRemoteData(); // Relance la vérification (affichera la bulle si besoin)
+				}
+				
+				lastKnownUserId = currentUserId;
+			});
 
 			// SAUVEGARDE LOCALE (Appelé par SaveManager.update_stat)
 			window.saveLocal = function(jsonStr) {
@@ -414,6 +476,26 @@ const engine = new Engine(GODOT_CONFIG);
 			});
 			
 		</script>
+		
+		<!-- Bulle de conflit de sauvegarde -->
+		<div id="sync-conflict-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:10000; align-items:center; justify-content:center;">
+			<div style="background:#1f1f1f; border:1px solid #fa5c5c; padding:25px; border-radius:8px; max-width:400px; text-align:center; color:white; font-family:sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+				<h3 style="margin-top:0; color:#fa5c5c;">Conflit de sauvegarde</h3>
+				<p>Tu viens de te connecter. Quelle progression veux-tu conserver ?</p>
+				
+				<div style="display:flex; flex-direction:column; gap:10px; margin-top:20px;">
+					<button id="btn-keep-local" style="background:#fa5c5c; color:white; border:none; padding:12px; border-radius:4px; cursor:pointer; font-weight:bold;">
+						💾 GARDER MA SESSION ACTUELLE<br>
+						<span style="font-size:10px; font-weight:normal; opacity:0.8;">(Écrase la sauvegarde sur ton compte)</span>
+					</button>
+					
+					<button id="btn-keep-cloud" style="background:#444; color:white; border:none; padding:12px; border-radius:4px; cursor:pointer; font-weight:bold;">
+						☁️ RÉCUPÉRER MON COMPTE<br>
+						<span style="font-size:10px; font-weight:normal; opacity:0.8;">(Écrase ta progression actuelle)</span>
+					</button>
+				</div>
+			</div>
+		</div>
 	</body>
 </html>
 
