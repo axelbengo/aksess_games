@@ -270,16 +270,17 @@ const engine = new Engine(GODOT_CONFIG);
 					const data = await GameSync.load(slug);
 					
 					if (window.on_data_received) {
-						// Si data est null ou NETWORK_ERROR, on envoie la string
-						// Sinon on envoie l'objet directement (Godot préfère ça)
-						if (data === null || data === "NETWORK_ERROR") {
-							window.on_data_received(String(data));
+						if (data === "NETWORK_ERROR") {
+							window.on_data_received("NETWORK_ERROR");
+						} else if (!data) {
+							window.on_data_received("null");
 						} else {
-							window.on_data_received(data); 
+							// OBLIGATOIRE : On convertit l'objet en texte JSON pour Godot
+							window.on_data_received(JSON.stringify(data)); 
 						}
 					}
 				} catch (e) {
-					console.error("Erreur JS requestRemoteData:", e);
+					console.error(e);
 					if (window.on_data_received) window.on_data_received("NETWORK_ERROR");
 				}
 			};
