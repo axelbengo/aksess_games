@@ -138,7 +138,7 @@ export const GameSync = {
 					new_data: dataToSend 
 				},
 				headers: {
-					Authorization: `Bearer ${session.access_token}`
+					Authorization: `Bearer ${user.access_token}`
 				}
 			});
 
