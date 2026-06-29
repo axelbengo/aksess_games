@@ -5,6 +5,7 @@ if (typeof window === 'undefined') {
 
     self.addEventListener("fetch", (event) => {
         const url = event.request.url;
+        let request = event.request;
 
         // --- BYPASS UNIQUEMENT POUR CLOUDFLARE RUM (Erreur 204) ---
         if (url.includes("cdn-cgi/rum")) {
@@ -12,7 +13,7 @@ if (typeof window === 'undefined') {
         }
         
         // Si c'est Paddle, on force le mode opaque/no-cors pour éviter le blocage CORP
-		if (request.url.includes("paddle.com")) {
+		if (url.includes("paddle.com")) {
 			request = new Request(request.url, {
 				mode: "no-cors",
 				credentials: "omit"
