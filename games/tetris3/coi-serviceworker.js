@@ -1,49 +1,32 @@
-/*! coi-serviceworker v0.1.7 (Corrected for 204/304 and Paddle bypass) */
-let coepCredentialless = false;
+/*! coi-serviceworker v0.1.7 - Version Ultra-Compatible (Chrome, Opera, Firefox, Safari) */
 if (typeof window === 'undefined') {
     self.addEventListener("install", () => self.skipWaiting());
     self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
-    self.addEventListener("message", (ev) => {
-        if (!ev.data) return;
-        if (ev.data.type === "deregister") {
-            self.registration.unregister().then(() => self.clients.matchAll()).then(clients => {
-                clients.forEach((client) => client.navigate(client.url));
-            });
-        } else if (ev.data.type === "coepCredentialless") {
-            coepCredentialless = ev.data.value;
-        }
-    });
-
     self.addEventListener("fetch", function (event) {
         const r = event.request;
 
-        // --- CORRECTIF 1 : BYPASS TOTAL POUR PADDLE ET CLOUDFLARE BEACONS ---
+        // --- BYPASS : On ne touche pas à Supabase, Paddle et Cloudflare ---
         if (r.url.includes("cdn-cgi/rum") || r.url.includes("supabase.co")) {
             return; 
         }
 
         if (r.cache === "only-if-cached" && r.mode !== "same-origin") return;
 
-        const request = (coepCredentialless && r.mode === "no-cors")
-            ? new Request(r, { credentials: "omit" })
-            : r;
-
         event.respondWith(
-            fetch(request)
+            fetch(r)
                 .then((response) => {
                     if (response.status === 0) return response;
 
                     const newHeaders = new Headers(response.headers);
-                    // On définit les règles de sécurité de base
-                    newHeaders.set("Cross-Origin-Embedder-Policy", coepCredentialless ? "credentialless" : "require-corp");
-                    newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
                     
-                    // FORCE la permission Cross-Origin pour débloquer le CSS de Paddle
+                    // --- CONFIGURATION UNIVERSELLE ---
+                    // On utilise 'require-corp' qui est le standard le plus largement supporté
+                    newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
+                    newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
                     newHeaders.set("Cross-Origin-Resource-Policy", "cross-origin");
 
-                    // --- CORRECTIF 2 : GESTION DES RÉPONSES SANS CORPS (204, 304, etc.) ---
-                    // Obligatoire pour éviter "Response with null body status cannot have body"
+                    // Gestion des réponses vides (204, 304) pour éviter le crash
                     if (response.status === 204 || response.status === 304) {
                         return new Response(null, {
                             status: response.status,
@@ -66,27 +49,27 @@ if (typeof window === 'undefined') {
     });
 
 } else {
+    // --- PARTIE CLIENT (Navigateur) ---
     (() => {
-        const coi = {
-            shouldRegister: () => true,
-            shouldDeregister: () => false,
-            coepCredentialless: () => !(window.chrome || window.netscape),
-            doReload: () => window.location.reload(),
-            quiet: false,
-            ...window.coi
-        };
         const n = navigator;
-        if (n.serviceWorker && n.serviceWorker.controller) {
-            n.serviceWorker.controller.postMessage({ type: "coepCredentialless", value: coi.coepCredentialless() });
-            if (coi.shouldDeregister()) n.serviceWorker.controller.postMessage({ type: "deregister" });
-        }
-        if (window.crossOriginIsolated !== false || !coi.shouldRegister()) return;
-        if (!window.isSecureContext) return;
         if (n.serviceWorker) {
             n.serviceWorker.register(window.document.currentScript.src).then((registration) => {
-                registration.addEventListener("updatefound", () => coi.doReload());
-                if (registration.active && !n.serviceWorker.controller) coi.doReload();
+                // Si une mise à jour est trouvée, on recharge
+                registration.addEventListener("updatefound", () => {
+                    window.location.reload();
+                });
+
+                // Si le service worker est prêt mais ne contrôle pas encore la page
+                if (registration.active && !n.serviceWorker.controller) {
+                    window.location.reload();
+                }
             });
+        }
+
+        // Vérification : si on n'est pas en mode isolé après chargement, on force le SW
+        if (window.crossOriginIsolated === false && n.serviceWorker.controller) {
+            console.log("🔄 Activation de l'isolation Cross-Origin...");
+            window.location.reload();
         }
     })();
 }
