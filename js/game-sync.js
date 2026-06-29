@@ -77,6 +77,8 @@ export const GameSync = {
 	},
 
     async saveLocally(gameSlug, newData) {
+		if(isSyncDisabled)
+			return;
         newData.saved_at = Date.now();
         const dataString = JSON.stringify(newData);
         
