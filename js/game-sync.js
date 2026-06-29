@@ -24,38 +24,41 @@ export const GameSync = {
         try {
             const { data: { user } } = await supabaseClient.auth.getUser();
             const localRaw = localStorage.getItem(`save_${gameSlug}`);
-            
-            let localData = null;
-            if (localRaw) {
-                const envelope = JSON.parse(localRaw);
-                // Si c'est une ancienne sauvegarde sans signature, on accepte pour cette fois ou on refuse
-                if (!envelope.signature) {
-                    localData = envelope; 
-                } else {
-                    // VERIFICATION DU SCEAU
-                    const expectedSignature = await this.generateSignature(JSON.stringify(envelope.payload));
-                    if (envelope.signature === expectedSignature) {
-                        localData = envelope.payload;
-                    } else {
-                        console.error("🚨 ALERTE TRICHE : La signature locale est invalide !");
-                        return "TAMPERED_ERROR"; // On prévient Godot
-                    }
-                }
+            const envelope = localRaw ? JSON.parse(localRaw) : null;
+
+            // --- 1. VERIFICATION INTEGRITÉ LOCALE ---
+            if (envelope && envelope.signature) {
+                const isValid = await this.verifyLocalSignature(gameSlug, envelope);
+                if (!isValid) return "TAMPERED_ERROR";
             }
+            let localData = envelope ? envelope.payload : null;
 
             if (!user) return localData;
 
-            // Chargement Cloud
-            const { data, error } = await supabaseClient.from("user_game_data").select("data").eq('user_id', user.id).eq('game_slug', gameSlug).maybeSingle();
-            if (error) throw error;
+            // --- 2. RÉCUPÉRATION CLOUD ---
+            const { data: remoteRow, error } = await supabaseClient
+                .from("user_game_data")
+                .select("data")
+                .eq('user_id', user.id)
+                .eq('game_slug', gameSlug)
+                .maybeSingle();
 
-            if (data && data.data) {
-                // Ici aussi on pourrait vérifier une signature cloud si on veut être paranoïaque
-                localStorage.setItem(`save_${gameSlug}`, JSON.stringify({
-                    payload: data.data,
-                    signature: await this.generateSignature(JSON.stringify(data.data))
-                }));
-                return data.data;
+            if (error) throw error;
+            const remoteData = remoteRow?.data ?? null;
+
+            // --- 3. DÉTECTION DU CONFLIT (Invité vers Connecté) ---
+            // Si on a une save locale de type "invité" et qu'on est connecté
+            if (localData && localData.is_logged_in === false && remoteData) {
+                // On renvoie l'objet de conflit à l'index.html
+                return { _conflict: true, remote: remoteData, local: localData };
+            }
+
+            // --- 4. SYNCHRO AUTOMATIQUE (Si pas de conflit) ---
+            if (remoteData) {
+                // On met à jour le local avec le cloud car le cloud est la vérité pour un compte connecté
+                const signature = await this.generateSignature(JSON.stringify(remoteData));
+                localStorage.setItem(`save_${gameSlug}`, JSON.stringify({ payload: remoteData, signature: signature }));
+                return remoteData;
             }
 
             return localData;
@@ -77,23 +80,20 @@ export const GameSync = {
 		}, 3000);
 	},
 
-    async saveLocally(gameSlug, newData) {
-		if(isSyncDisabled)
-			return;
+    async saveLocally(gameSlug, newData, forceLoggedIn = false) {
+        if (isSyncDisabled) return;
+
+        // On s'assure que le flag est correct
+        if (forceLoggedIn) newData.is_logged_in = true;
+
         newData.saved_at = Date.now();
-        const dataString = JSON.stringify(newData);
+        const signature = await this.generateSignature(JSON.stringify(newData));
+        localStorage.setItem(`save_${gameSlug}`, JSON.stringify({ payload: newData, signature: signature }));
         
-        // On génère le sceau
-        const signature = await this.generateSignature(dataString);
-        
-        // On enregistre l'enveloppe complète
-        const envelope = {
-            payload: newData,
-            signature: signature
-        };
-        
-        localStorage.setItem(`save_${gameSlug}`, JSON.stringify(envelope));
-        this.scheduleSync(gameSlug);
+        // On ne synchronise sur le cloud QUE si on est marqué connecté
+        if (newData.is_logged_in === true) {
+            this.scheduleSync(gameSlug);
+        }
     },
 	
 	async deleteData(gameSlug) {
@@ -152,7 +152,12 @@ export const GameSync = {
 			
 			 // On récupère l'enveloppe signée (Niveau 1)
 			const envelope = JSON.parse(localRaw);
-			const dataToSend = envelope.payload || envelope; 
+			const dataToSend = envelope.payload || envelope;
+			
+			if (!dataToSend || dataToSend.is_logged_in === false) {
+                console.log("🚫 Synchro cloud bloquée : Données non authentifiées.");
+                return;
+            }
 
 			// 3. Écraser sur Supabase (Simple Upsert)
 			// APPEL DE LA FONCTION SÉCURISÉE AU LIEU DE L'UPSERT DIRECT
