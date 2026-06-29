@@ -266,51 +266,76 @@ const engine = new Engine(GODOT_CONFIG);
 
 			// CHARGEMENT DIRECT(Appelé par SaveManager._ready)
 			window.requestRemoteData = async function() {
-				try {
-					console.log("📥 JS: Vérification de la session...");
-					
-					// 1. Récupérer les deux sources
-					const { data: { user } } = await supabaseClient.auth.getUser();
-					const localRaw = localStorage.getItem(`save_${slug}`);
-					const localData = localRaw ? JSON.parse(localRaw) : null;
+			try {
+				console.log("📥 JS: Analyse de l'intégrité...");
+				
+				const { data: { user } } = await supabaseClient.auth.getUser();
+				const localRaw = localStorage.getItem(`save_${slug}`);
+				let localData = null;
 
-					// 2. CAS DE CONFLIT : Joueur a une partie locale ET est connecté
-					// On vérifie si la partie locale appartient à un "invité" (pas de saved_at ou saved_at différent du cloud)
-					if (user && localData && localData.is_logged_in === false && !conflictResolved) {
-						console.log("⚠️ Conflit détecté : Session invité trouvée sur un compte connecté.");
-						// On récupère les infos cloud pour comparer
-						const choice = await showConflictModal();
-						conflictResolved = true;
-
-						if (choice === 'cloud') {
-							// On écrase le local par le cloud
-							const { data: remote } = await supabaseClient.from("user_game_data").select("data").eq('user_id', user.id).eq('game_slug', slug).maybeSingle();
-							if (remote) {
-								localStorage.setItem(`save_${slug}`, JSON.stringify(remote.data));
-								window.on_data_received?.(JSON.stringify(remote.data));
-								return;
-							}
+				// 1. VÉRIFICATION D'INTÉGRITÉ PRÉALABLE
+				if (localRaw) {
+					try {
+						const envelope = JSON.parse(localRaw);
+						// On vérifie la signature (Niveau 1)
+						const isValid = await GameSync.verifyLocalSignature(slug, envelope);
+						
+						if (isValid) {
+							localData = envelope.payload;
 						} else {
-								// Choix Local : On garde le local et on force une synchro cloud immédiate
-								await GameSync.sync(slug);
-								if (window.on_data_received) window.on_data_received(JSON.stringify(localData));
+							console.warn("⚠️ Données locales corrompues détectées. Elles seront ignorées.");
+							// Si corrompu, on ne propose PAS le choix au joueur
+						}
+					} catch (e) {
+						console.error("❌ Erreur de lecture JSON locale:", e);
+					}
+				}
+
+				// 2. LOGIQUE DE CONFLIT (Uniquement si localData est VALIDE)
+				if (user && localData && localData.is_logged_in === false && !conflictResolved) {
+					const { data: remoteRow } = await supabaseClient.from("user_game_data").select("data").eq('user_id', user.id).eq('game_slug', slug).maybeSingle();
+					const remoteData = remoteRow?.data;
+
+					if (remoteData) {
+						const localTs = localData.saved_at || 0;
+						const remoteTs = remoteData.saved_at || 0;
+						
+						// Si l'écart est significatif, on demande
+						if (Math.abs(localTs - remoteTs) > 10000) { 
+							const choice = await showConflictModal();
+							conflictResolved = true;
+							
+							if (choice === 'cloud') {
+								// On adopte le cloud
+								localStorage.setItem(`save_${slug}`, JSON.stringify({
+									payload: remoteData,
+									signature: await GameSync.generateSignature(JSON.stringify(remoteData))
+								}));
+								window.on_data_received?.(JSON.stringify(remoteData));
 								return;
 							}
-							
+							// Si 'local', on continue vers GameSync.load qui fera l'upsert sécurisé
+						}
 					}
-
-					// 3. CAS NORMAL (Déjà connecté ou Hors-ligne pur) : On utilise la fonction load normale
-					const data = await GameSync.load(slug);
-					conflictResolved = true; // On a chargé, plus besoin de bulle
-					if (window.on_data_received) {
-						window.on_data_received(data === "NETWORK_ERROR" ? "NETWORK_ERROR" : JSON.stringify(data));
-					}
-
-				} catch (e) {
-					console.error(e);
-					if (window.on_data_received) window.on_data_received("NETWORK_ERROR");
 				}
-			};
+
+				// 3. CHARGEMENT FINAL
+				// Si localData était null (car corrompu), load() se rabattra sur le Cloud
+				const data = await GameSync.load(slug);
+				conflictResolved = true;
+
+				if (data === "TAMPERED_ERROR") {
+					window.on_data_received?.("TAMPERED_ERROR");
+				} else {
+					window.on_data_received?.(data === "NETWORK_ERROR" ? "NETWORK_ERROR" : JSON.stringify(data));
+				}
+
+			} catch (e) {
+				console.error("💥 Crash requestRemoteData:", e);
+				// CRITIQUE : Toujours répondre à Godot pour éviter le freeze
+				window.on_data_received?.("NETWORK_ERROR");
+			}
+		};
 			
 			// Petite fonction utilitaire pour Godot
 			window.get_user_status = function() {
